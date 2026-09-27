@@ -30,3 +30,4 @@ Apply [Google's small CL guidance](https://google.github.io/eng-practices/review
 - Keep local configuration, credentials and runtime state out of Git.
 - Run focused tests for the changed behavior. Use the full suite for integrated
   changes: `PYTHONPATH=src python3 -m unittest discover -s tests -v`.
+- `python3 monitor.py demo` is a synthetic local check, not a broker integration test.

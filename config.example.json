@@ -1,0 +1,16 @@
+{
+  "symbol": "META",
+  "price_below": null,
+  "volume_mode": "daily",
+  "volume_threshold": null,
+  "poll_seconds": 30,
+  "cooldown_seconds": 900,
+  "max_quote_age_seconds": 90,
+  "max_volume_age_seconds": 360,
+  "lookback_sessions": 20,
+  "min_baseline_sessions": 5,
+  "source": "normalized_file",
+  "snapshot_path": "snapshot.local.json",
+  "state_path": ".state/alerts.json",
+  "notification": "console"
+}
