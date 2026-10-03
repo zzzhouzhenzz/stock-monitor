@@ -10,6 +10,7 @@ from .rules import EXCHANGE_TIMEZONE, Quote, VolumeObservation
 
 BAR = timedelta(minutes=5)
 LAG_RETRY = timedelta(seconds=15)
+SCHEDULE_HORIZON_DAYS = 90
 
 
 def _utc(value):
@@ -103,7 +104,7 @@ class RobinhoodSource:
                 raise RuntimeError("Robinhood source requires pandas-market-calendars") from exc
             self.calendar = mcal.get_calendar("NASDAQ")
         start = day - timedelta(days=max(45, self.rule.lookback_sessions * 3 + 14))
-        schedule = self.calendar.schedule(start_date=start, end_date=day)
+        schedule = self.calendar.schedule(start_date=start, end_date=day + timedelta(days=SCHEDULE_HORIZON_DAYS))
         sessions = {}
         for _, row in schedule.iterrows():
             opens, closes = _utc(row["market_open"]), _utc(row["market_close"])
@@ -118,10 +119,24 @@ class RobinhoodSource:
 
     def is_market_open(self, now):
         """Recheck this after a slow fetch before delivering an alert."""
+        return self.session_close(now) is not None
+
+    def session_close(self, now):
+        """Return the current regular session's close, or None while closed."""
         now = _utc(now)
         day = self._prepare_day(now)
         session = self._sessions.get(day)
-        return session is not None and session.opens <= now < session.closes
+        return session.closes if session is not None and session.opens <= now < session.closes else None
+
+    def next_open(self, now):
+        """Return now during regular trading, otherwise the next opening."""
+        now = _utc(now)
+        if self.session_close(now) is not None:
+            return now
+        openings = [session.opens for session in self._sessions.values() if session.opens > now]
+        if not openings:
+            raise RuntimeError(f"NASDAQ calendar has no future opening within {SCHEDULE_HORIZON_DAYS} days")
+        return min(openings)
 
     def _quote(self, payload):
         quotes = []

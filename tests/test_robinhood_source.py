@@ -134,6 +134,33 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((await source.fetch(close))["market_open"])
         self.assertEqual(tools.calls, [])
 
+    async def test_session_close_and_next_open_use_inclusive_open_exclusive_close(self):
+        tomorrow = DAY + timedelta(days=1)
+        calendar = FakeCalendar({day: session(day) for day in [DAY, tomorrow]})
+        tools = FakeTools()
+        source = RobinhoodSource(rule(), tools, calendar)
+        close = calendar.rows[DAY]["market_close"]
+        self.assertIsNone(source.session_close(OPEN - timedelta(seconds=1)))
+        self.assertEqual(source.next_open(OPEN - timedelta(seconds=1)), OPEN)
+        self.assertEqual(source.session_close(OPEN), close)
+        self.assertEqual(source.next_open(OPEN), OPEN)
+        self.assertEqual(source.next_open(NOW.astimezone(NY)), NOW)
+        self.assertIsNone(source.session_close(close))
+        self.assertEqual(source.next_open(close), calendar.rows[tomorrow]["market_open"])
+        self.assertEqual(len(calendar.calls), 1)
+        self.assertEqual(calendar.calls[0][1], DAY + timedelta(days=90))
+        self.assertEqual(tools.calls, [])
+
+    async def test_no_future_session_in_horizon_has_clear_bounded_failure(self):
+        calendar = FakeCalendar({})
+        tools = FakeTools()
+        source = RobinhoodSource(rule(), tools, calendar)
+        with self.assertRaisesRegex(RuntimeError, "NASDAQ calendar has no future opening within 90 days"):
+            source.next_open(NOW)
+        self.assertIsNone(source.session_close(NOW))
+        self.assertEqual(len(calendar.calls), 1)
+        self.assertEqual(tools.calls, [])
+
     async def test_open_inclusive_but_first_volume_waits_for_completed_bar(self):
         tools = FakeTools(quotes=quote_payload(OPEN))
         source = RobinhoodSource(rule(), tools, FakeCalendar())
@@ -230,7 +257,7 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_prior_sessions_use_separate_windows_and_honor_lookback(self):
         days = [DAY - timedelta(days=n) for n in (3, 4, 5)]
-        calendar = FakeCalendar({day: session(day) for day in [DAY] + days})
+        calendar = FakeCalendar({day: session(day) for day in [DAY, DAY + timedelta(days=1)] + days})
         tools = FakeTools()
         source = RobinhoodSource(rule("bar_relative"), tools, calendar)
         await source.fetch(NOW)
@@ -334,6 +361,31 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((await source.fetch(holiday))["market_open"])
         self.assertTrue(source.is_market_open(close - timedelta(seconds=1)))
         self.assertFalse((await source.fetch(close))["market_open"])
+        self.assertEqual(tools.calls, [])
+
+    @unittest.skipUnless(importlib.util.find_spec("pandas_market_calendars"), "optional calendar is not installed")
+    async def test_real_calendar_next_open_handles_weekend_holiday_early_close_and_dst(self):
+        tools = FakeTools()
+        source = RobinhoodSource(rule(), tools)
+        cases = [
+            # Friday close to Monday; both are on daylight saving time.
+            (datetime(2026, 10, 2, 20, tzinfo=UTC), datetime(2026, 10, 5, 13, 30, tzinfo=UTC)),
+            # Thanksgiving to the shortened Friday session.
+            (datetime(2026, 11, 26, 16, tzinfo=UTC), datetime(2026, 11, 27, 14, 30, tzinfo=UTC)),
+            # Friday's 13:00 New York close to Monday.
+            (datetime(2026, 11, 27, 18, tzinfo=UTC), datetime(2026, 11, 30, 14, 30, tzinfo=UTC)),
+            # Spring DST transition: Monday's opening moves one hour earlier in UTC.
+            (datetime(2026, 3, 6, 21, tzinfo=UTC), datetime(2026, 3, 9, 13, 30, tzinfo=UTC)),
+            # Fall DST transition: Monday's opening moves one hour later in UTC.
+            (datetime(2026, 10, 30, 20, tzinfo=UTC), datetime(2026, 11, 2, 14, 30, tzinfo=UTC)),
+        ]
+        for now, expected in cases:
+            with self.subTest(now=now):
+                self.assertIsNone(source.session_close(now))
+                self.assertEqual(source.next_open(now), expected)
+                self.assertEqual(source.next_open(now).utcoffset(), timedelta(0))
+        early_session = datetime(2026, 11, 27, 16, tzinfo=UTC)
+        self.assertEqual(source.session_close(early_session), datetime(2026, 11, 27, 18, tzinfo=UTC))
         self.assertEqual(tools.calls, [])
 
 
