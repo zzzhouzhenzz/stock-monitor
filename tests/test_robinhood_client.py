@@ -301,6 +301,65 @@ class RobinhoodClientTests(unittest.IsolatedAsyncioTestCase):
         with rh._credential_lock(self.path):
             pass
 
+    async def test_real_mcp_session_deadline_preserves_timeout_and_releases_resources(self):
+        await self.seed()
+        clients, deadlines = [], []
+        request_cancelled = asyncio.Event()
+
+        async def handler(request):
+            if str(request.url) == rh.METADATA_URL:
+                return httpx2.Response(200, json=METADATA)
+            self.assertEqual(str(request.url), rh.ENDPOINT)
+            if request.method == "GET":
+                return httpx2.Response(405)
+            body = json.loads(request.content)
+            method = body["method"]
+            if method == "initialize":
+                result = {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
+                          "serverInfo": {"name": "test", "version": "1"}}
+            elif method in ("notifications/initialized", "notifications/cancelled"):
+                return httpx2.Response(202)
+            elif method == "tools/list":
+                result = {"tools": [{"name": "get_equity_quotes", "inputSchema": {"type": "object"}}]}
+            elif method == "tools/call":
+                # Expire the outer session deadline only after the real SDK's
+                # HTTP request starts, so handshake timing cannot make this flaky.
+                deadlines[0].reschedule(asyncio.get_running_loop().time() + 0.01)
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    request_cancelled.set()
+                self.fail("Stalled request must be cancelled")
+            else:
+                self.fail(f"Unexpected MCP method: {method}")
+            return httpx2.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+        transport = httpx2.MockTransport(handler)
+
+        def http_factory(**kwargs):
+            http = httpx2.AsyncClient(transport=transport, **kwargs)
+            clients.append(http)
+            return http
+
+        async def request_quote():
+            async with asyncio.timeout(None) as deadline:
+                deadlines.append(deadline)
+                async with rh.RobinhoodClient(self.path) as client:
+                    await client.call_tool("get_equity_quotes", {"symbols": ["META"]})
+
+        with patch.object(rh, "_http_client", http_factory), patch.object(
+            rh, "Client", lambda transport: MCPClient(transport, mode="legacy", read_timeout_seconds=1)
+        ), patch.object(rh.webbrowser, "open") as browser:
+            with self.assertRaises(TimeoutError):
+                await asyncio.wait_for(request_quote(), timeout=2)
+            browser.assert_not_called()
+        self.assertTrue(deadlines[0].expired())
+        self.assertTrue(request_cancelled.is_set())
+        self.assertTrue(all(http.is_closed for http in clients))
+        self.assertIn("tokens", json.loads(self.path.read_text()))
+        with rh._credential_lock(self.path):
+            pass
+
     async def test_malformed_credentials_do_not_leak_contents(self):
         self.path.write_text('{"secret-value":')
         self.path.chmod(0o600)

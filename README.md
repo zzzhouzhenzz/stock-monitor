@@ -1,7 +1,8 @@
 # META price and volume monitor
 
-A local Python service for macOS and Linux. It polls Robinhood market data every
-2 minutes, evaluates fixed rules, and sends iPhone notifications through ntfy.
+A local Python service for macOS and Linux. During regular trading sessions it
+polls Robinhood market data every 2 minutes, evaluates fixed rules, and sends
+iPhone notifications through ntfy.
 The running service does not use an LLM or consume model tokens.
 
 The selected configuration has two independent alerts:
@@ -100,8 +101,18 @@ python monitor.py run --config config.local.json
 ```
 
 `--dry-run` fetches data and evaluates rules without alerts or alert-state changes.
-`--once` performs one poll. Only regular NASDAQ sessions are monitored, including
-calendar holidays and early closes. A closed-market result is not a freshness test.
+`--once` performs one poll. The NASDAQ calendar excludes weekends and holidays and
+handles early closes and daylight-saving changes. Outside a regular session,
+`--once` exits without connecting to Robinhood; this does not verify credentials
+or data freshness.
+
+The background process connects at market open and closes the connection at
+session end. Between sessions it sleeps until the next scheduled opening, with
+one log entry and no two-minute checks or Robinhood authentication attempts.
+The session deadline also cancels slow Robinhood requests at close. The process stays in
+memory while idle and does not wake a sleeping computer. Keep the host awake;
+restart the service after host suspension or a manual clock change to recalculate
+the wait. The explicit `login` command remains available outside trading hours.
 
 Quotes must be at most 90 seconds old. Volume uses the latest completed 5-minute
 bar, with a maximum age of 360 seconds. The baseline uses up to 20 prior sessions

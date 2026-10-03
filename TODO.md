@@ -15,6 +15,8 @@ The selected phone service is ntfy. Polling is 2 minutes; cooldown is 900 second
   `notify-test`. Confirm receipt while locked; HTTP acceptance is not delivery proof.
 - [ ] Review and install one generated service. Verify that restart preserves
   alert state and inspect logs. Keep only one machine active.
+- [ ] Verify that a closed session waits until the next opening without connecting,
+  and that session close cancels slow requests and closes the connection before sleep.
 - [ ] Repeat deployment verification on the other OS without copying credentials.
 
 ## Local verification

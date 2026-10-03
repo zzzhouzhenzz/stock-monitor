@@ -73,7 +73,13 @@ async def poll(config, rule, state, once, dry_run=False, source=None):
             if source is None:
                 raw = read_json(config["snapshot_path"])
             else:
-                raw = await source.fetch(datetime.now(timezone.utc))
+                before_fetch = datetime.now(timezone.utc)
+                if not source.is_market_open(before_fetch):
+                    if once:
+                        print(f"{before_fetch.isoformat()} market_closed", flush=True)
+                        return 0
+                    return None  # Let the caller close the connection before waiting.
+                raw = await source.fetch(before_fetch)
             now = datetime.now(timezone.utc)
             if source is not None and not source.is_market_open(now):
                 raw = {"market_open": False}
@@ -91,18 +97,50 @@ async def poll(config, rule, state, once, dry_run=False, source=None):
                 return 1
         if once:
             return 0
-        await asyncio.sleep(max(0, _delay(config, failures) - (time.monotonic() - started)))
+        delay = max(0, _delay(config, failures) - (time.monotonic() - started))
+        if source is not None:
+            now = datetime.now(timezone.utc)
+            closes = source.session_close(now)
+            if closes is None:
+                return None
+            delay = min(delay, (closes - now).total_seconds())
+        await asyncio.sleep(delay)
 
 
 async def run_robinhood(config, rule, state, once, dry_run):
     from .robinhood_client import AuthRequired, RobinhoodClient, RobinhoodError
     from .robinhood_source import RobinhoodSource
     failures = 0
+    source = RobinhoodSource(rule, None)
     while True:
+        now = datetime.now(timezone.utc)
+        if not source.is_market_open(now):
+            if once:
+                print(f"{now.isoformat()} market_closed", flush=True)
+                return 0
+            opens = source.next_open(now)
+            print(f"{now.isoformat()} market_closed; sleeping until {opens.isoformat()}", flush=True)
+            await asyncio.sleep(max(0, (opens - datetime.now(timezone.utc)).total_seconds()))
+            continue  # Recheck the calendar and wall clock before authenticating.
+        # Stop connection setup and in-flight fetches at the session boundary.
+        # The client context closes before the scheduler sleeps overnight.
+        closes = source.session_close(now)
+        deadline = asyncio.timeout((closes - now).total_seconds())
         try:
-            async with RobinhoodClient(config["credentials_path"]) as client:
-                source = RobinhoodSource(rule, client.call_tool)
-                return await poll(config, rule, state, once, dry_run, source)
+            async with deadline:
+                async with RobinhoodClient(config["credentials_path"]) as client:
+                    source.call_tool = client.call_tool
+                    result = await poll(config, rule, state, once, dry_run, source)
+            if result is not None:
+                return result
+            failures = 0
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            if once:
+                print(f"{datetime.now(timezone.utc).isoformat()} market_closed", flush=True)
+                return 0
+            failures = 0
         except AuthRequired:
             raise
         except RobinhoodError as exc:
@@ -110,7 +148,10 @@ async def run_robinhood(config, rule, state, once, dry_run):
             if once:
                 return 1
             failures += 1
-            await asyncio.sleep(_delay(config, failures))
+            now = datetime.now(timezone.utc)
+            closes = source.session_close(now)
+            if closes is not None:
+                await asyncio.sleep(min(_delay(config, failures), (closes - now).total_seconds()))
 
 
 def run(config_path, once=False, dry_run=False):

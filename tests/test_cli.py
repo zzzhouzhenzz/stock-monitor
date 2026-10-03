@@ -1,3 +1,4 @@
+import asyncio
 import copy
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -16,6 +17,9 @@ from stock_monitor.runtime import AlertState, load_config, rule_id
 
 UTC = timezone.utc
 NOW = datetime(2026, 9, 25, 15, tzinfo=UTC)
+OPEN = NOW.replace(hour=13, minute=30)
+CLOSE = NOW.replace(hour=20)
+NEXT_OPEN = datetime(2026, 9, 28, 13, 30, tzinfo=UTC)
 PRIOR_SESSIONS = [date(2026, 9, day) for day in (18, 21, 22, 23, 24)]
 HAS_LIVE_DEPS = (importlib.util.find_spec("mcp") is not None
                  and importlib.util.find_spec("httpx2") is not None)
@@ -39,6 +43,37 @@ def snapshot(price="788", shares=200, at=NOW, bar_end=NOW):
         "baseline_bars": [volume_bar(datetime.combine(day, NOW.time(), UTC), 100)
                           for day in PRIOR_SESSIONS],
     }
+
+
+class WallClock:
+    def __init__(self, at):
+        self.value = at
+
+    def now(self, timezone=None):
+        return self.value
+
+
+def source_stub(raw=None):
+    sessions = [(OPEN, CLOSE), (NEXT_OPEN, NEXT_OPEN.replace(hour=20, minute=0))]
+
+    def session_close(at):
+        return next((end for start, end in sessions if start <= at < end), None)
+
+    def next_open(at):
+        return at if session_close(at) else min(start for start, _ in sessions if start > at)
+
+    return SimpleNamespace(
+        fetch=AsyncMock(return_value=snapshot() if raw is None else raw),
+        is_market_open=Mock(side_effect=lambda at: session_close(at) is not None),
+        session_close=Mock(side_effect=session_close), next_open=Mock(side_effect=next_open),
+    )
+
+
+def client_stub():
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    return client
 
 
 class ConfigFixture:
@@ -230,25 +265,37 @@ class ConfigurationTests(ConfigFixture, unittest.TestCase):
 class PollTests(ConfigFixture, unittest.IsolatedAsyncioTestCase):
     async def test_slow_fetch_age_is_checked_after_io(self):
         after_fetch = NOW + timedelta(seconds=91)
-        source = SimpleNamespace(fetch=AsyncMock(return_value=snapshot()), is_market_open=Mock(return_value=True))
-        with patch("stock_monitor.cli.datetime") as clock, patch("stock_monitor.cli.notify") as notify, \
+        source = source_stub()
+        clock = WallClock(NOW)
+
+        async def fetch(at):
+            clock.value = after_fetch
+            return snapshot()
+
+        source.fetch.side_effect = fetch
+        with patch("stock_monitor.cli.datetime", clock), patch("stock_monitor.cli.notify") as notify, \
                 patch("sys.stdout", new=io.StringIO()) as output:
-            clock.now.side_effect = [NOW, after_fetch]
             result = await poll(self.config, self.rule, self.state(), once=True, source=source)
         self.assertEqual(result, 0)
         self.assertEqual(output.getvalue().count("ineligible: stale_quote"), 2)
         source.fetch.assert_awaited_once_with(NOW)
-        source.is_market_open.assert_called_once_with(after_fetch)
+        source.is_market_open.assert_any_call(NOW)
+        source.is_market_open.assert_any_call(after_fetch)
         notify.assert_not_called()
         self.assertFalse(self.config["state_path"].exists())
 
     async def test_fresh_response_after_latency_evaluates_both_rules_from_one_fetch(self):
         response_time = NOW + timedelta(seconds=10)
-        source = SimpleNamespace(fetch=AsyncMock(return_value=snapshot(at=response_time)),
-                                 is_market_open=Mock(return_value=True))
-        with patch("stock_monitor.cli.datetime") as clock, patch("stock_monitor.cli.notify") as notify, \
+        source = source_stub()
+        clock = WallClock(NOW)
+
+        async def fetch(at):
+            clock.value = response_time + timedelta(seconds=1)
+            return snapshot(at=response_time)
+
+        source.fetch.side_effect = fetch
+        with patch("stock_monitor.cli.datetime", clock), patch("stock_monitor.cli.notify") as notify, \
                 patch("sys.stdout", new=io.StringIO()):
-            clock.now.side_effect = [NOW, response_time + timedelta(seconds=1)]
             result = await poll(self.config, self.rule, self.state(), once=True, source=source)
         self.assertEqual(result, 0)
         source.fetch.assert_awaited_once()
@@ -257,15 +304,21 @@ class PollTests(ConfigFixture, unittest.IsolatedAsyncioTestCase):
     async def test_market_closing_during_fetch_prevents_delivery(self):
         before = NOW.replace(hour=19, minute=59, second=59)
         after = NOW.replace(hour=20, second=1)
-        source = SimpleNamespace(fetch=AsyncMock(return_value=snapshot(at=before)),
-                                 is_market_open=Mock(return_value=False))
-        with patch("stock_monitor.cli.datetime") as clock, patch("stock_monitor.cli.notify") as notify, \
+        source = source_stub()
+        clock = WallClock(before)
+
+        async def fetch(at):
+            clock.value = after
+            return snapshot(at=before)
+
+        source.fetch.side_effect = fetch
+        with patch("stock_monitor.cli.datetime", clock), patch("stock_monitor.cli.notify") as notify, \
                 patch("sys.stdout", new=io.StringIO()) as output:
-            clock.now.side_effect = [before, after]
             result = await poll(self.config, self.rule, self.state(), once=True, source=source)
         self.assertEqual(result, 0)
         self.assertIn("market_closed", output.getvalue())
-        source.is_market_open.assert_called_once_with(after)
+        source.is_market_open.assert_any_call(before)
+        source.is_market_open.assert_any_call(after)
         notify.assert_not_called()
 
     async def test_invalid_file_snapshot_returns_failure_without_state_or_delivery(self):
@@ -284,8 +337,9 @@ class PollTests(ConfigFixture, unittest.IsolatedAsyncioTestCase):
     @unittest.skipUnless(HAS_LIVE_DEPS, "optional Robinhood client dependencies are not installed")
     async def test_live_transport_failure_propagates_to_reconnection_boundary(self):
         from stock_monitor.robinhood_client import RobinhoodError
-        source = SimpleNamespace(fetch=AsyncMock(side_effect=RobinhoodError("transport unavailable")))
-        with self.assertRaises(RobinhoodError):
+        source = source_stub()
+        source.fetch.side_effect = RobinhoodError("transport unavailable")
+        with patch("stock_monitor.cli.datetime", WallClock(NOW)), self.assertRaises(RobinhoodError):
             await poll(self.config, self.rule, self.state(), once=False, source=source)
         self.assertFalse(self.config["state_path"].exists())
 
@@ -294,12 +348,12 @@ class PollTests(ConfigFixture, unittest.IsolatedAsyncioTestCase):
         from stock_monitor.robinhood_client import RobinhoodError
         self.config["credentials_path"] = self.root / "credentials.json"
         state = self.state()
-        client = MagicMock()
-        client.__aenter__ = AsyncMock(return_value=client)
-        client.__aexit__ = AsyncMock(return_value=False)
+        client = client_stub()
         with patch("stock_monitor.robinhood_client.RobinhoodClient", return_value=client) as constructor, \
                 patch("stock_monitor.cli.poll", new=AsyncMock(side_effect=[RobinhoodError("disconnected"), 0])) as polling, \
                 patch("stock_monitor.cli.asyncio.sleep", new=AsyncMock()) as sleep, \
+                patch("stock_monitor.cli.datetime", WallClock(NOW)), \
+                patch("stock_monitor.robinhood_source.RobinhoodSource", return_value=source_stub()), \
                 patch("sys.stderr", new=io.StringIO()):
             result = await run_robinhood(self.config, self.rule, state, once=False, dry_run=False)
         self.assertEqual(result, 0)
@@ -315,10 +369,220 @@ class PollTests(ConfigFixture, unittest.IsolatedAsyncioTestCase):
         client.__aenter__ = AsyncMock(side_effect=AuthRequired("run login"))
         client.__aexit__ = AsyncMock(return_value=False)
         with patch("stock_monitor.robinhood_client.RobinhoodClient", return_value=client), \
+                patch("stock_monitor.cli.datetime", WallClock(NOW)), \
+                patch("stock_monitor.robinhood_source.RobinhoodSource", return_value=source_stub()), \
                 patch("stock_monitor.cli.asyncio.sleep", new=AsyncMock()) as sleep:
             with self.assertRaises(AuthRequired):
                 await run_robinhood(self.config, self.rule, self.state(), once=False, dry_run=False)
         sleep.assert_not_awaited()
+
+    async def test_closed_poll_returns_before_fetching(self):
+        for once, expected in [(True, 0), (False, None)]:
+            with self.subTest(once=once):
+                source = source_stub()
+                with patch("stock_monitor.cli.datetime", WallClock(CLOSE)), \
+                        patch("sys.stdout", new=io.StringIO()):
+                    self.assertEqual(await poll(self.config, self.rule, self.state(), once, source=source), expected)
+                source.fetch.assert_not_awaited()
+
+    @unittest.skipUnless(HAS_LIVE_DEPS, "optional Robinhood client dependencies are not installed")
+    async def test_closed_once_does_not_construct_or_authenticate_client(self):
+        source = source_stub()
+        with patch("stock_monitor.cli.datetime", WallClock(CLOSE)), \
+                patch("stock_monitor.robinhood_source.RobinhoodSource", return_value=source), \
+                patch("stock_monitor.robinhood_client.RobinhoodClient") as constructor, \
+                patch("stock_monitor.cli.asyncio.sleep", new=AsyncMock()) as sleep, \
+                patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(await run_robinhood(self.config, self.rule, self.state(), True, False), 0)
+        constructor.assert_not_called()
+        source.fetch.assert_not_awaited()
+        source.next_open.assert_not_called()
+        sleep.assert_not_awaited()
+
+    @unittest.skipUnless(HAS_LIVE_DEPS, "optional Robinhood client dependencies are not installed")
+    async def test_closed_runner_sleeps_to_next_open_before_connecting(self):
+        self.config["credentials_path"] = self.root / "credentials.json"
+        self.config["poll_seconds"] = 120
+        clock = WallClock(CLOSE)
+        source = source_stub()
+        client = client_stub()
+
+        async def wake(seconds):
+            constructor.assert_not_called()
+            self.assertEqual(seconds, (NEXT_OPEN - CLOSE).total_seconds())
+            clock.value = NEXT_OPEN
+
+        with patch("stock_monitor.cli.datetime", clock), \
+                patch("stock_monitor.robinhood_source.RobinhoodSource", return_value=source), \
+                patch("stock_monitor.robinhood_client.RobinhoodClient", return_value=client) as constructor, \
+                patch("stock_monitor.cli.poll", new=AsyncMock(return_value=0)) as polling, \
+                patch("stock_monitor.cli.asyncio.sleep", new=AsyncMock(side_effect=wake)) as sleep, \
+                patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(await run_robinhood(self.config, self.rule, self.state(), False, False), 0)
+        sleep.assert_awaited_once()
+        constructor.assert_called_once()
+        polling.assert_awaited_once()
+        source.is_market_open.assert_any_call(NEXT_OPEN)
+
+    @unittest.skipUnless(HAS_LIVE_DEPS, "optional Robinhood client dependencies are not installed")
+    async def test_early_wake_rechecks_clock_before_authentication(self):
+        self.config["credentials_path"] = self.root / "credentials.json"
+        clock = WallClock(CLOSE)
+        source = source_stub()
+        sleeps = []
+
+        async def wake(seconds):
+            constructor.assert_not_called()
+            sleeps.append(seconds)
+            clock.value = NEXT_OPEN - timedelta(seconds=30) if len(sleeps) == 1 else NEXT_OPEN
+
+        with patch("stock_monitor.cli.datetime", clock), \
+                patch("stock_monitor.robinhood_source.RobinhoodSource", return_value=source), \
+                patch("stock_monitor.robinhood_client.RobinhoodClient", return_value=client_stub()) as constructor, \
+                patch("stock_monitor.cli.poll", new=AsyncMock(return_value=0)), \
+                patch("stock_monitor.cli.asyncio.sleep", new=AsyncMock(side_effect=wake)), \
+                patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(await run_robinhood(self.config, self.rule, self.state(), False, False), 0)
+        self.assertEqual(sleeps, [(NEXT_OPEN - CLOSE).total_seconds(), 30])
+        constructor.assert_called_once()
+        source.is_market_open.assert_any_call(NEXT_OPEN - timedelta(seconds=30))
+
+    @unittest.skipUnless(HAS_LIVE_DEPS, "optional Robinhood client dependencies are not installed")
+    async def test_connection_exits_before_overnight_sleep(self):
+        self.config["credentials_path"] = self.root / "credentials.json"
+        clock = WallClock(CLOSE - timedelta(seconds=5))
+        source = source_stub()
+        client = client_stub()
+        events = []
+
+        async def polling(*args):
+            events.append("poll")
+            clock.value = CLOSE
+            return None
+
+        async def disconnect(*args):
+            events.append("disconnect")
+            return False
+
+        async def stop_at_sleep(seconds):
+            events.append("sleep")
+            self.assertEqual(seconds, (NEXT_OPEN - CLOSE).total_seconds())
+            raise asyncio.CancelledError
+
+        client.__aexit__.side_effect = disconnect
+        with patch("stock_monitor.cli.datetime", clock), \
+                patch("stock_monitor.robinhood_source.RobinhoodSource", return_value=source), \
+                patch("stock_monitor.robinhood_client.RobinhoodClient", return_value=client), \
+                patch("stock_monitor.cli.poll", new=AsyncMock(side_effect=polling)), \
+                patch("stock_monitor.cli.asyncio.sleep", new=AsyncMock(side_effect=stop_at_sleep)), \
+                patch("sys.stdout", new=io.StringIO()), self.assertRaises(asyncio.CancelledError):
+            await run_robinhood(self.config, self.rule, self.state(), False, False)
+        self.assertEqual(events, ["poll", "disconnect", "sleep"])
+
+    @unittest.skipUnless(HAS_LIVE_DEPS, "optional Robinhood client dependencies are not installed")
+    async def test_poll_sleep_and_error_backoff_are_capped_at_close(self):
+        self.config["poll_seconds"] = 120
+        for failure in (None, ValueError("invalid snapshot")):
+            with self.subTest(failure=failure):
+                source = source_stub({"market_open": True, "quote": None, "volume": None})
+                source.fetch.side_effect = failure
+                with patch("stock_monitor.cli.datetime", WallClock(CLOSE - timedelta(seconds=5))), \
+                        patch("stock_monitor.cli.time.monotonic", return_value=0), \
+                        patch("stock_monitor.cli.asyncio.sleep", new=AsyncMock(side_effect=asyncio.CancelledError)) as sleep, \
+                        patch("sys.stdout", new=io.StringIO()), patch("sys.stderr", new=io.StringIO()), \
+                        self.assertRaises(asyncio.CancelledError):
+                    await poll(self.config, self.rule, self.state(), False, source=source)
+                sleep.assert_awaited_once_with(5)
+
+    @unittest.skipUnless(HAS_LIVE_DEPS, "optional Robinhood client dependencies are not installed")
+    async def test_connection_error_backoff_is_capped_at_close(self):
+        from stock_monitor.robinhood_client import RobinhoodError
+        self.config["credentials_path"] = self.root / "credentials.json"
+        self.config["poll_seconds"] = 120
+        client = client_stub()
+        with patch("stock_monitor.cli.datetime", WallClock(CLOSE - timedelta(seconds=5))), \
+                patch("stock_monitor.robinhood_source.RobinhoodSource", return_value=source_stub()), \
+                patch("stock_monitor.robinhood_client.RobinhoodClient", return_value=client), \
+                patch("stock_monitor.cli.poll", new=AsyncMock(side_effect=RobinhoodError("disconnected"))), \
+                patch("stock_monitor.cli.asyncio.sleep", new=AsyncMock(side_effect=asyncio.CancelledError)) as sleep, \
+                patch("sys.stderr", new=io.StringIO()), self.assertRaises(asyncio.CancelledError):
+            await run_robinhood(self.config, self.rule, self.state(), False, False)
+        sleep.assert_awaited_once_with(5)
+        client.__aexit__.assert_awaited_once()
+
+    @unittest.skipUnless(HAS_LIVE_DEPS, "optional Robinhood client dependencies are not installed")
+    async def test_session_deadline_cancels_slow_connection_setup_and_once_returns(self):
+        self.config["credentials_path"] = self.root / "credentials.json"
+        close = NOW + timedelta(seconds=0.01)
+        source = source_stub()
+        source.session_close.side_effect = lambda at: close
+        client = client_stub()
+        cleaned = asyncio.Event()
+
+        async def slow_enter():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+
+        client.__aenter__.side_effect = slow_enter
+        with patch("stock_monitor.cli.datetime", WallClock(NOW)), \
+                patch("stock_monitor.robinhood_source.RobinhoodSource", return_value=source), \
+                patch("stock_monitor.robinhood_client.RobinhoodClient", return_value=client), \
+                patch("stock_monitor.cli.poll", new=AsyncMock()) as polling, \
+                patch("stock_monitor.cli.asyncio.sleep", new=AsyncMock()) as sleep, \
+                patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(await run_robinhood(self.config, self.rule, self.state(), True, False), 0)
+        self.assertTrue(cleaned.is_set())
+        client.__aexit__.assert_not_awaited()  # Entry never completed; setup cleans its own resources.
+        polling.assert_not_awaited()
+        sleep.assert_not_awaited()
+
+    @unittest.skipUnless(HAS_LIVE_DEPS, "optional Robinhood client dependencies are not installed")
+    async def test_session_deadline_cancels_slow_poll_before_client_exit_and_sleep(self):
+        self.config["credentials_path"] = self.root / "credentials.json"
+        for once in (True, False):
+            with self.subTest(once=once):
+                close = NOW + timedelta(seconds=0.01)
+                clock = WallClock(NOW)
+                source = source_stub()
+                source.is_market_open.side_effect = lambda at: at < close
+                source.session_close.side_effect = lambda at: close if at < close else None
+                source.next_open.side_effect = None
+                source.next_open.return_value = NEXT_OPEN
+                client = client_stub()
+                events = []
+
+                async def slow_poll(*args):
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        clock.value = close
+                        events.append("cancelled")
+
+                async def disconnect(*args):
+                    events.append("disconnected")
+                    return False
+
+                async def stop_at_sleep(seconds):
+                    events.append("sleep")
+                    self.assertEqual(seconds, (NEXT_OPEN - close).total_seconds())
+                    raise asyncio.CancelledError
+
+                client.__aexit__.side_effect = disconnect
+                with patch("stock_monitor.cli.datetime", clock), \
+                        patch("stock_monitor.robinhood_source.RobinhoodSource", return_value=source), \
+                        patch("stock_monitor.robinhood_client.RobinhoodClient", return_value=client), \
+                        patch("stock_monitor.cli.poll", new=AsyncMock(side_effect=slow_poll)), \
+                        patch("stock_monitor.cli.asyncio.sleep", new=AsyncMock(side_effect=stop_at_sleep)) as sleep, \
+                        patch("sys.stdout", new=io.StringIO()):
+                    if once:
+                        self.assertEqual(await run_robinhood(self.config, self.rule, self.state(), True, False), 0)
+                        sleep.assert_not_awaited()
+                    else:
+                        with self.assertRaises(asyncio.CancelledError):
+                            await run_robinhood(self.config, self.rule, self.state(), False, False)
+                self.assertEqual(events, ["cancelled", "disconnected"] + ([] if once else ["sleep"]))
 
 
 if __name__ == "__main__":
