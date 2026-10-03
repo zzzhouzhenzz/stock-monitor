@@ -1,4 +1,4 @@
-"""Local snapshot runner support; no broker or trading calls."""
+"""Configuration, alert state, and delivery for the stock monitor."""
 import hashlib
 import json
 import math
@@ -45,10 +45,13 @@ def read_json(path):
 def load_config(path):
     path = Path(path).resolve()
     raw = read_json(path)
-    if raw.get("source") != "normalized_file":
-        raise ValueError("Only normalized_file is implemented; Robinhood is not connected")
-    if raw.get("notification") not in ("console", "desktop"):
-        raise ValueError("notification must be console or desktop")
+    if raw.get("source") not in ("normalized_file", "robinhood"):
+        raise ValueError("source must be normalized_file or robinhood")
+    if raw.get("notification") not in ("console", "desktop", "ntfy"):
+        raise ValueError("notification must be console, desktop, or ntfy")
+    if raw["notification"] == "ntfy":
+        from .notifications import validate_ntfy_config
+        validate_ntfy_config(raw)
     for key in ("poll_seconds", "cooldown_seconds"):
         value = raw[key]
         if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
@@ -57,23 +60,49 @@ def load_config(path):
         if not math.isfinite(value) or value < (1 if key == "poll_seconds" else 0):
             raise ValueError(f"Invalid {key}")
         raw[key] = value
-    rule = RuleConfig(
-        symbol=raw["symbol"],
-        price_below=decimal(raw["price_below"], "price_below"),
-        volume_mode=raw["volume_mode"],
-        volume_threshold=decimal(raw["volume_threshold"], "volume_threshold"),
-        max_quote_age_seconds=raw.get("max_quote_age_seconds", 90),
-        max_volume_age_seconds=raw.get("max_volume_age_seconds", 360),
-        lookback_sessions=raw.get("lookback_sessions", 20),
-        min_baseline_sessions=raw.get("min_baseline_sessions", 5),
-    )
-    for key in ("snapshot_path", "state_path"):
+    alerts = raw.get("alerts", [raw])
+    if not isinstance(alerts, list) or not alerts or any(not isinstance(a, dict) for a in alerts):
+        raise ValueError("alerts must be a nonempty list of price conditions")
+    rules = []
+    for alert in alerts:
+        above = alert.get("price_above")
+        below = alert.get("price_below")
+        if above is not None and below is not None:
+            raise ValueError("Set exactly one of price_above or price_below per alert")
+        rule = RuleConfig(
+            symbol=raw["symbol"],
+            price_below=decimal(below, "price_below") if above is None else None,
+            price_above=decimal(above, "price_above") if above is not None else None,
+            volume_mode=raw["volume_mode"],
+            volume_threshold=decimal(raw["volume_threshold"], "volume_threshold"),
+            max_quote_age_seconds=raw.get("max_quote_age_seconds", 90),
+            max_volume_age_seconds=raw.get("max_volume_age_seconds", 360),
+            lookback_sessions=raw.get("lookback_sessions", 20),
+            min_baseline_sessions=raw.get("min_baseline_sessions", 5),
+        )
+        if rule in rules:
+            raise ValueError("Duplicate alert conditions")
+        rules.append(rule)
+    raw["rules"] = tuple(rules)
+    keys = ["state_path"]
+    if raw["source"] == "normalized_file":
+        keys.append("snapshot_path")
+    else:
+        raw.setdefault("credentials_path", ".state/robinhood.json")
+        keys.append("credentials_path")
+        if raw["poll_seconds"] < 30:
+            raise ValueError("Robinhood poll_seconds must be at least 30")
+    for key in keys:
         raw[key] = path.parent / raw[key]
-    if raw["snapshot_path"].resolve() == raw["state_path"].resolve():
-        raise ValueError("snapshot_path and state_path must be different files")
+    if len({raw[key].resolve() for key in keys}) != len(keys):
+        raise ValueError("Source, credentials, and state paths must be different files")
     # New rules get their own alert state; delivery/state paths do not alter the rule.
-    raw["rule_id"] = hashlib.sha256(repr(rule).encode()).hexdigest()
-    return raw, rule
+    raw["rule_id"] = rule_id(rules[0])
+    return raw, rules[0]
+
+
+def rule_id(rule):
+    return hashlib.sha256(repr(rule).encode()).hexdigest()
 
 
 def parse_snapshot(raw):
@@ -148,7 +177,7 @@ class AlertState:
                 os.unlink(temporary)
 
 
-def notify(channel, title, message):
+def notify(channel, title, message, config=None):
     if channel == "console":
         print(f"ALERT: {title}\n{message}", flush=True)
     elif channel == "desktop" and platform.system() == "Darwin":
@@ -158,5 +187,8 @@ def notify(channel, title, message):
         subprocess.run(["osascript", "-e", script, title, message], check=True, timeout=15)
     elif channel == "desktop" and platform.system() == "Linux":
         subprocess.run(["notify-send", title, message], check=True, timeout=15)
+    elif channel == "ntfy":
+        from .notifications import send_ntfy
+        send_ntfy(config or {}, title, message)
     else:
         raise ValueError(f"Unsupported notification channel/platform: {channel}")

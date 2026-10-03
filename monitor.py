@@ -1,4 +1,4 @@
-"""Run directly without installing dependencies."""
+"""Run the monitor from this source checkout."""
 import sys
 from pathlib import Path
 

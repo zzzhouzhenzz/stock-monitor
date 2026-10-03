@@ -63,7 +63,8 @@ class NtfyTests(unittest.TestCase):
         self.build.assert_not_called()
 
     def test_invalid_topics_do_not_send(self):
-        for topic in (None, "", "with space", "path/topic", "a" * 65, "é", "topic\n", 123):
+        for topic in (None, "", "with space", "path/topic", "a" * 65, "é", "topic\n", 123,
+                      "REPLACE_WITH_A_RANDOM_TOPIC"):
             with self.subTest(topic=topic), self.assertRaisesRegex(RuntimeError, "ntfy_topic"):
                 send_ntfy(dict(self.config, ntfy_topic=topic), "META", "Alert")
         self.opener.open.assert_not_called()
