@@ -7,7 +7,7 @@ name = "stock-monitor"
 version = "0.2.0"
 description = "Portable read-only stock price-and-volume monitor"
 requires-python = ">=3.12"
-dependencies = ["mcp==2.3.0"]
+dependencies = ["mcp==2.3.0", "pandas-market-calendars==5.4.0"]
 
 [project.scripts]
 stock-monitor = "stock_monitor.cli:main"
