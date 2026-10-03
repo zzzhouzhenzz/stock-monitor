@@ -5,7 +5,7 @@
   "volume_threshold": "2",
   "lookback_sessions": 20,
   "min_baseline_sessions": 5,
-  "poll_seconds": 30,
+  "poll_seconds": 120,
   "cooldown_seconds": 900,
   "max_quote_age_seconds": 90,
   "max_volume_age_seconds": 360,

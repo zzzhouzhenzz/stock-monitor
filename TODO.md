@@ -2,14 +2,14 @@
 
 The selected rules are META **> $760** and **> $787**, each with latest completed
 5-minute volume **≥ 2×** its average at the same time over prior sessions.
-The selected phone service is ntfy. Polling is 30 seconds; cooldown is 900 seconds.
+The selected phone service is ntfy. Polling is 2 minutes; cooldown is 900 seconds.
 
 ## Live checks
 
 - [ ] Complete standalone `login` and verify the META quote check.
 - [ ] Run `run --once --dry-run` during a regular session. Verify timestamps,
   completed bars, same-time historical depth, and calendar handling.
-- [ ] Observe 30-second polling and Robinhood throttling. Verify token renewal
+- [ ] Observe 2-minute polling and Robinhood throttling. Verify token renewal
   after expiry and an actionable error after authorization is revoked.
 - [ ] Set an unguessable local ntfy topic, subscribe on the iPhone, and run
   `notify-test`. Confirm receipt while locked; HTTP acceptance is not delivery proof.

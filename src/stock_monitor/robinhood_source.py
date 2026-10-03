@@ -10,7 +10,6 @@ from .rules import EXCHANGE_TIMEZONE, Quote, VolumeObservation
 
 BAR = timedelta(minutes=5)
 LAG_RETRY = timedelta(seconds=15)
-LAG_WINDOW = timedelta(seconds=90)
 
 
 def _utc(value):
@@ -212,7 +211,6 @@ class RobinhoodSource:
         new_boundary = target != self._target_end
         retry_missing = (
             target - BAR not in self._bars
-            and now < target + LAG_WINDOW
             and (self._last_bar_fetch is None or now - self._last_bar_fetch >= LAG_RETRY)
         )
         if new_boundary or retry_missing:

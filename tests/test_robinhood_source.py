@@ -189,15 +189,18 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         await source.fetch(boundary + timedelta(seconds=30))
         self.assertEqual(tools.count("get_equity_historicals"), 2)
 
-    async def test_missing_latest_does_not_retry_for_entire_bar(self):
-        tools = FakeTools(histories={DAY: history_payload([])})
+    async def test_two_minute_polls_recover_delayed_bar_without_reusing_it_next_interval(self):
+        tools = FakeTools(histories={DAY: [history_payload([]), history_payload([]),
+                                          history_payload([bar(OPEN + BAR)])]})
         source = RobinhoodSource(rule(), tools, FakeCalendar())
         boundary = OPEN + 2 * BAR
-        await source.fetch(boundary)
-        await source.fetch(boundary + timedelta(seconds=30))
-        await source.fetch(boundary + timedelta(seconds=90))
-        await source.fetch(boundary + timedelta(seconds=180))
-        self.assertEqual(tools.count("get_equity_historicals"), 2)
+        self.assertIsNone((await source.fetch(boundary))["volume"])
+        self.assertIsNone((await source.fetch(boundary + timedelta(seconds=120)))["volume"])
+        recovered = await source.fetch(boundary + timedelta(seconds=240))
+        self.assertEqual(recovered["volume"]["bar_end"], boundary.isoformat())
+        self.assertIsNone((await source.fetch(boundary + timedelta(seconds=360)))["volume"])
+        self.assertEqual(tools.count("get_equity_historicals"), 4)
+        self.assertEqual(tools.calls[-1][1]["end_time"], (boundary + BAR).isoformat())
 
     async def test_same_new_york_clock_baselines_across_dst_and_cached_once_per_day(self):
         current, previous = date(2026, 3, 9), date(2026, 3, 6)

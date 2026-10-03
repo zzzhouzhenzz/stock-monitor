@@ -1,7 +1,7 @@
 # META price and volume monitor
 
 A local Python service for macOS and Linux. It polls Robinhood market data every
-30 seconds, evaluates fixed rules, and sends iPhone notifications through ntfy.
+2 minutes, evaluates fixed rules, and sends iPhone notifications through ntfy.
 The running service does not use an LLM or consume model tokens.
 
 The selected configuration has two independent alerts:
@@ -109,8 +109,9 @@ at the same New York clock interval and requires at least 5 valid sessions.
 Missing, stale, interpolated, incomplete, or invalid data cannot trigger an alert.
 Insufficient history means no alert until enough data is available.
 
-Quotes are polled every 30 seconds. Historical bars are cached and refreshed at
-bar boundaries, with limited retries for delayed bars. Source timestamps remain
+Quotes are polled every 2 minutes. Historical bars are cached and refreshed at
+bar boundaries. Missing bars are retried on later polls until the next boundary.
+Source timestamps remain
 explicit. Polling can miss brief price crossings; volume confirmation waits for a
 completed bar. Robinhood polling limits and available history need live checks.
 
