@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stock-monitor"
-version = "0.1.0"
-description = "Portable price-and-volume alert prototype"
-requires-python = ">=3.9"
-dependencies = []
+version = "0.2.0"
+description = "Portable read-only stock price-and-volume monitor"
+requires-python = ">=3.12"
+dependencies = ["mcp==2.3.0"]
 
 [project.scripts]
 stock-monitor = "stock_monitor.cli:main"

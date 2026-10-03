@@ -1,6 +1,9 @@
 .venv/
+.python-runtime/
 __pycache__/
 *.egg-info/
 .state/
 config.local.json
 snapshot.local.json
+*.local.json
+service.local.*
