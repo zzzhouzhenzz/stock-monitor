@@ -48,6 +48,18 @@ class RuleTests(unittest.TestCase):
         self.assertFalse(self.evaluate(q=quote("100")).matched)
         self.assertTrue(self.evaluate(q=quote("99.99999999999999999999")).matched)
 
+    def test_above_threshold_is_strict_and_requires_volume(self):
+        rule = replace(self.daily, price_below=None, price_above=D("760"))
+        self.assertFalse(self.evaluate(rule, q=quote("760")).matched)
+        self.assertTrue(self.evaluate(rule, q=quote("760.000001")).matched)
+        self.assertFalse(self.evaluate(rule, q=quote("761"), v=volume("199")).matched)
+
+    def test_price_direction_must_be_unambiguous(self):
+        with self.assertRaises(ValueError):
+            replace(self.daily, price_above=D("760"))
+        with self.assertRaises(ValueError):
+            replace(self.daily, price_below=None)
+
     def test_missing_observations(self):
         self.assertEqual(evaluate(self.daily, None, volume(), NOW).reason, "missing_quote")
         self.assertEqual(evaluate(self.daily, quote(), None, NOW).reason, "missing_volume")
