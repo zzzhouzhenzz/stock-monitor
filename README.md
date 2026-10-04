@@ -5,6 +5,12 @@ polls Robinhood market data every 2 minutes, evaluates fixed rules, and sends
 iPhone notifications through ntfy.
 The running service does not use an LLM or consume model tokens.
 
+Explore the [interactive code hierarchy](docs/architecture.html) by opening
+`docs/architecture.html` in a browser. The self-contained page has selectable 3D
+layers, file details, source links, and open/closed-session walkthroughs. It makes
+no broker requests and needs no server or frontend dependencies. The page labels
+the source commit it describes; update its manifest when module roles change.
+
 The selected configuration has two independent alerts:
 
 | Price condition | Volume condition |
