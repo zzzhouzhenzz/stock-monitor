@@ -6,10 +6,18 @@ iPhone notifications through ntfy.
 The running service does not use an LLM or consume model tokens.
 
 Explore the [interactive code hierarchy](docs/architecture.html) by opening
-`docs/architecture.html` in a browser. The self-contained page has selectable 3D
-layers, file details, source links, and open/closed-session walkthroughs. It makes
-no broker requests and needs no server or frontend dependencies. The page labels
-the source commit it describes; update its manifest when module roles change.
+`docs/architecture.html` in a browser. Keep `docs/hierarchy-data.js` beside it.
+The tree shows real directories, files, classes, methods, and nested functions.
+Use **+** to expand a node, search for a symbol, or select **Focus on this node**
+to inspect a subtree. Switch between 3D, flat, and outline views. Each connection
+means containment, not a call. The page makes no broker requests and needs no
+server or frontend dependencies.
+
+Regenerate the hierarchy after source changes with
+`python docs/build_hierarchy.py`. It reads public Git-tracked paths and Python
+syntax trees; local config, credentials, and runtime state are excluded. Source
+links use the recorded Git base where available. Validate the generator with
+`python -m unittest discover -s docs -p 'test_build_hierarchy.py'`.
 
 The selected configuration has two independent alerts:
 
