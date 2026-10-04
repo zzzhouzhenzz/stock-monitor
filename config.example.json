@@ -3,7 +3,7 @@
   "price_below": null,
   "volume_mode": "daily",
   "volume_threshold": null,
-  "poll_seconds": 30,
+  "poll_seconds": 120,
   "cooldown_seconds": 900,
   "max_quote_age_seconds": 90,
   "max_volume_age_seconds": 360,

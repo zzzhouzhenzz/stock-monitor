@@ -47,7 +47,7 @@ def _session(value: date, timestamp: datetime, name: str) -> None:
 @dataclass(frozen=True)
 class RuleConfig:
     symbol: str
-    price_below: Decimal
+    price_below: Optional[Decimal]
     volume_mode: str
     volume_threshold: Decimal
     max_quote_age_seconds: int = 90
@@ -56,10 +56,14 @@ class RuleConfig:
     lookback_sessions: int = 20
     min_baseline_sessions: int = 5
     bar_minutes: int = 5
+    price_above: Optional[Decimal] = None
 
     def __post_init__(self) -> None:
         _symbol(self.symbol)
-        _decimal(self.price_below, "price_below")
+        if (self.price_below is None) == (self.price_above is None):
+            raise ValueError("Set exactly one of price_below or price_above")
+        _decimal(self.price_below if self.price_below is not None else self.price_above,
+                 "price threshold")
         _decimal(self.volume_threshold, "volume_threshold")
         if self.volume_mode not in VOLUME_MODES:
             raise ValueError(f"volume_mode must be one of {sorted(VOLUME_MODES)}")
@@ -156,7 +160,7 @@ def evaluate(
     now: datetime,
     baseline_bars: Iterable[VolumeObservation] = (),
 ) -> Evaluation:
-    """Require price < threshold AND volume >= threshold.
+    """Require the strict price condition AND volume >= threshold.
 
     For relative volume, threshold is a multiplier of the arithmetic mean of
     matching completed bars in the latest ``lookback_sessions`` available prior
@@ -217,9 +221,11 @@ def evaluate(
             ratio = volume.volume / mean
             volume_matched = ratio >= config.volume_threshold
 
-    price_matched = quote.price < config.price_below
+    price_matched = (quote.price < config.price_below if config.price_below is not None
+                     else quote.price > config.price_above)
     if not price_matched:
-        return Evaluation(True, False, "price_not_below_threshold", ratio)
+        direction = "below" if config.price_below is not None else "above"
+        return Evaluation(True, False, f"price_not_{direction}_threshold", ratio)
     if not volume_matched:
         return Evaluation(True, False, "volume_below_threshold", ratio)
     return Evaluation(True, True, "matched", ratio)

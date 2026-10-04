@@ -1,0 +1,18 @@
+{
+  "symbol": "META",
+  "alerts": [{"price_above": "760"}, {"price_above": "787"}],
+  "volume_mode": "bar_relative",
+  "volume_threshold": "2",
+  "lookback_sessions": 20,
+  "min_baseline_sessions": 5,
+  "poll_seconds": 120,
+  "cooldown_seconds": 900,
+  "max_quote_age_seconds": 90,
+  "max_volume_age_seconds": 360,
+  "source": "robinhood",
+  "credentials_path": ".state/robinhood.json",
+  "state_path": ".state/alerts.json",
+  "notification": "ntfy",
+  "ntfy_server": "https://ntfy.sh",
+  "ntfy_topic": "REPLACE_WITH_A_RANDOM_TOPIC"
+}
