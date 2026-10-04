@@ -5,19 +5,38 @@ polls Robinhood market data every 2 minutes, evaluates fixed rules, and sends
 iPhone notifications through ntfy.
 The running service does not use an LLM or consume model tokens.
 
-Explore the [interactive code hierarchy](docs/architecture.html) by opening
-`docs/architecture.html` in a browser. Keep `docs/hierarchy-data.js` beside it.
-The tree shows real directories, files, classes, methods, and nested functions.
-Use **+** to expand a node, search for a symbol, or select **Focus on this node**
-to inspect a subtree. Switch between 3D, flat, and outline views. Each connection
-means containment, not a call. The page makes no broker requests and needs no
-server or frontend dependencies.
+Explore [who calls whom](docs/architecture.html) by opening
+`docs/architecture.html` in a browser. Keep `docs/callgraph-data.js` beside it.
+Select a function to see its callers, its callees, and the exact call sites.
+Follow the arrows, search for a symbol, or start from a preset such as the poll
+loop. Select a call-site link to inspect the expression and source evidence.
+The page labels direct calls, awaited calls, constructors, injected callables,
+callbacks, and context-manager entry or exit.
 
-Regenerate the hierarchy after source changes with
-`python docs/build_hierarchy.py`. It reads public Git-tracked paths and Python
-syntax trees; local config, credentials, and runtime state are excluded. Source
-links use the recorded Git base where available. Validate the generator with
+This is a **partial static call map**, not a live execution trace. It reads
+`monitor.py` and `src/stock_monitor/*.py` without importing or running them.
+It resolves local functions, methods, obvious local instances, and specific
+source-verified bindings. Other library calls, builtin calls, and unresolved
+dynamic calls are counted per caller. External SDK callbacks, inherited behavior,
+and generated dataclass methods are not expanded. An arrow records a source call
+or a labeled binding; it does not assert that a branch runs on every poll.
+
+Regenerate the call map and check its generator after source changes:
+
+```sh
+python docs/build_call_graph.py
+python -m unittest discover -s docs -p 'test_build_call_graph.py'
+```
+
+The [files and definitions view](docs/hierarchy.html) remains available as a
+separate repository tree. Its connections mean containment: directories, files,
+classes, methods, and nested functions. Keep `docs/hierarchy-data.js` beside that
+page. Regenerate it with `python docs/build_hierarchy.py` and check it with
 `python -m unittest discover -s docs -p 'test_build_hierarchy.py'`.
+
+Both pages use public source metadata. Local config, credentials, and runtime
+state are excluded. Source links use the recorded Git base for unchanged files.
+The pages make no broker requests and need no server or frontend dependencies.
 
 The selected configuration has two independent alerts:
 
